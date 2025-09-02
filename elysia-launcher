@@ -1,0 +1,9 @@
+#!/bin/bash
+
+# Prevent multiple instances
+if pgrep -f "ely_launcher" > /dev/null; then
+    echo "ely_launcher App is already running."
+    exit 1
+fi
+
+ely_launcher
