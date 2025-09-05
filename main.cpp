@@ -65,6 +65,11 @@ EnhancedEdgeLauncher::~EnhancedEdgeLauncher() {
         g_object_unref(placeholder_pixbuf);
     }
     
+    // Clean up suggestion label
+    if (suggestion_label) {
+        gtk_widget_destroy(suggestion_label);
+    }
+    
     delete apps_manager;
     delete emoji_manager;
     delete gif_manager;
@@ -122,55 +127,19 @@ void EnhancedEdgeLauncher::create_widget() {
     gtk_widget_set_size_request(search_entry, 280, 40);
     gtk_fixed_put(GTK_FIXED(layout), search_entry, 65, 20);
 
+    // Create suggestion overlay label (positioned dynamically)
+    suggestion_label = gtk_label_new("");
+    gtk_widget_set_name(suggestion_label, "suggestion-label");
+    gtk_widget_set_size_request(suggestion_label, 200, 40); // Smaller width
+    gtk_label_set_xalign(GTK_LABEL(suggestion_label), 0.0);
+    gtk_label_set_yalign(GTK_LABEL(suggestion_label), 0.5);
+    gtk_widget_set_sensitive(suggestion_label, FALSE); // Make it non-interactive
+    gtk_widget_set_can_focus(suggestion_label, FALSE);
+    gtk_fixed_put(GTK_FIXED(layout), suggestion_label, 85, 20); // Initial position
+    gtk_widget_set_visible(suggestion_label, FALSE); // Initially hidden
+
     g_signal_connect(search_entry, "changed", G_CALLBACK(on_search_changed), this);
-    g_signal_connect(search_entry, "key-press-event", G_CALLBACK(+[](GtkWidget*, GdkEventKey* event, gpointer self) -> gboolean {
-        auto* launcher = static_cast<EnhancedEdgeLauncher*>(self);
-        // Navigation keys override entry movement
-        if (event->keyval == GDK_KEY_Up) {
-            if (launcher->get_current_mode() == ViewMode::Apps) {
-                launcher->get_apps_manager()->select_prev();
-            } else if (launcher->get_current_mode() == ViewMode::Emojis && launcher->get_config().emoji_enabled) {
-                launcher->get_emoji_manager()->select_prev();
-            } else if (launcher->get_current_mode() == ViewMode::Gifs && launcher->get_config().gifs_enabled) {
-                launcher->get_gif_manager()->select_prev();
-            } else if (launcher->get_current_mode() == ViewMode::Files) {
-                launcher->get_files_manager()->select_prev();
-            } else if (launcher->get_current_mode() == ViewMode::Wallpapers) {
-                launcher->get_wallpaper_manager()->select_prev();
-            }
-            return TRUE;
-        }
-        if (event->keyval == GDK_KEY_Down) {
-            if (launcher->get_current_mode() == ViewMode::Apps) {
-                launcher->get_apps_manager()->select_next();
-            } else if (launcher->get_current_mode() == ViewMode::Emojis && launcher->get_config().emoji_enabled) {
-                launcher->get_emoji_manager()->select_next();
-            } else if (launcher->get_current_mode() == ViewMode::Gifs && launcher->get_config().gifs_enabled) {
-                launcher->get_gif_manager()->select_next();
-            } else if (launcher->get_current_mode() == ViewMode::Files) {
-                launcher->get_files_manager()->select_next();
-            } else if (launcher->get_current_mode() == ViewMode::Wallpapers) {
-                launcher->get_wallpaper_manager()->select_next();
-            }
-            return TRUE;
-        }
-        if (event->keyval == GDK_KEY_Return || event->keyval == GDK_KEY_KP_Enter) {
-            if (launcher->get_current_mode() == ViewMode::Apps) {
-                launcher->get_apps_manager()->activate_selected();
-            } else if (launcher->get_current_mode() == ViewMode::Emojis && launcher->get_config().emoji_enabled) {
-                launcher->get_emoji_manager()->activate_selected();
-            } else if (launcher->get_current_mode() == ViewMode::Gifs && launcher->get_config().gifs_enabled) {
-                launcher->get_gif_manager()->activate_selected();
-            } else if (launcher->get_current_mode() == ViewMode::Files) {
-                launcher->get_files_manager()->activate_selected();
-            } else if (launcher->get_current_mode() == ViewMode::Wallpapers) {
-                launcher->get_wallpaper_manager()->activate_selected();
-            }
-            return TRUE;
-        }
-        launcher->spawn_glitter_burst(6);
-        return FALSE;
-    }), this);
+    g_signal_connect(search_entry, "key-press-event", G_CALLBACK(on_search_key_press), this);
 
     // Label to display selected app name
     app_name_label = gtk_label_new("");
@@ -599,6 +568,182 @@ void EnhancedEdgeLauncher::update_app_name_label() {
     gtk_label_set_text(GTK_LABEL(app_name_label), text);
 }
 
+void EnhancedEdgeLauncher::update_auto_completion(const std::string& query) {
+    user_input = query;
+    
+    if (query.empty()) {
+        clear_suggestion();
+        return;
+    }
+    
+    std::string suggestion = find_best_suggestion(query);
+    
+    if (!suggestion.empty() && suggestion != query && suggestion.length() > query.length()) {
+        // Make sure suggestion starts with the query (case insensitive)
+        std::string query_lower = query;
+        std::transform(query_lower.begin(), query_lower.end(), query_lower.begin(), ::tolower);
+        
+        std::string suggestion_lower = suggestion;
+        std::transform(suggestion_lower.begin(), suggestion_lower.end(), suggestion_lower.begin(), ::tolower);
+        
+        if (suggestion_lower.substr(0, query_lower.length()) == query_lower) {
+            current_suggestion = suggestion;
+            has_suggestion = true;
+            
+            // Show the suggestion as gray overlay text
+            show_suggestion_overlay(query, suggestion);
+            return;
+        }
+    }
+    
+    clear_suggestion();
+}
+
+std::string EnhancedEdgeLauncher::find_best_suggestion(const std::string& query) {
+    if (query.empty()) return "";
+    
+    std::string query_lower = query;
+    std::transform(query_lower.begin(), query_lower.end(), query_lower.begin(), ::tolower);
+    
+    std::string best_suggestion = "";
+    
+    if (current_mode == ViewMode::Apps) {
+        // Find first app that starts with the query
+        for (const auto& app : apps_manager->get_filtered_apps()) {
+            std::string app_name_lower = app.name;
+            std::transform(app_name_lower.begin(), app_name_lower.end(), app_name_lower.begin(), ::tolower);
+            
+            if (app_name_lower.substr(0, query_lower.length()) == query_lower) {
+                return app.name;
+            }
+        }
+        
+        // If no exact start match, find first app that contains the query
+        for (const auto& app : apps_manager->get_filtered_apps()) {
+            std::string app_name_lower = app.name;
+            std::transform(app_name_lower.begin(), app_name_lower.end(), app_name_lower.begin(), ::tolower);
+            
+            if (app_name_lower.find(query_lower) == 0) {
+                return app.name;
+            }
+        }
+    } else if (current_mode == ViewMode::Emojis && config.emoji_enabled) {
+        // For emojis, find keywords that start with the query
+        std::vector<std::string> matching_keywords;
+        
+        // First, try to find in filtered emojis
+        for (const auto& emoji : emoji_manager->get_filtered_emojis()) {
+            std::string keywords_lower = emoji.keywords;
+            std::transform(keywords_lower.begin(), keywords_lower.end(), keywords_lower.begin(), ::tolower);
+            
+            std::istringstream iss(keywords_lower);
+            std::string word;
+            while (iss >> word) {
+                if (word.substr(0, query_lower.length()) == query_lower && word.length() > query_lower.length()) {
+                    matching_keywords.push_back(word);
+                }
+            }
+        }
+        
+        // If we found keywords, return the shortest one (most likely completion)
+        if (!matching_keywords.empty()) {
+            std::sort(matching_keywords.begin(), matching_keywords.end(), [](const std::string& a, const std::string& b) {
+                return a.length() < b.length();
+            });
+            return matching_keywords[0];
+        }
+        
+        // Fallback: common emoji keywords
+        std::vector<std::string> common_keywords = {"smile", "happy", "sad", "love", "heart", "face", "food", "animal", "nature", "party"};
+        for (const auto& keyword : common_keywords) {
+            if (keyword.substr(0, query_lower.length()) == query_lower && keyword.length() > query_lower.length()) {
+                return keyword;
+            }
+        }
+    } else if (current_mode == ViewMode::Gifs && config.gifs_enabled) {
+        // For GIFs, just return the query extended with common gif search terms
+        std::vector<std::string> common_terms = {"funny", "meme", "cute", "reaction", "happy", "sad", "love", "dance"};
+        for (const auto& term : common_terms) {
+            std::string term_lower = term;
+            std::transform(term_lower.begin(), term_lower.end(), term_lower.begin(), ::tolower);
+            if (term_lower.substr(0, query_lower.length()) == query_lower) {
+                return term;
+            }
+        }
+    } else if (current_mode == ViewMode::Wallpapers) {
+        // For wallpapers, suggest common wallpaper terms
+        std::vector<std::string> wallpaper_terms = {"nature", "abstract", "city", "space", "minimalist", "dark", "light", "mountain", "ocean", "forest"};
+        for (const auto& term : wallpaper_terms) {
+            std::string term_lower = term;
+            std::transform(term_lower.begin(), term_lower.end(), term_lower.begin(), ::tolower);
+            if (term_lower.substr(0, query_lower.length()) == query_lower) {
+                return term;
+            }
+        }
+    }
+    
+    return "";
+}
+
+void EnhancedEdgeLauncher::show_suggestion_overlay(const std::string& user_input, const std::string& suggestion) {
+    if (!suggestion_label) return;
+    
+    // Only show the remaining part of the suggestion in gray
+    std::string suggestion_part = suggestion.substr(user_input.length());
+    if (suggestion_part.empty()) return;
+    
+    // Calculate the width of the user input text to position the suggestion correctly
+    PangoLayout* layout_obj = pango_layout_new(gtk_widget_get_pango_context(search_entry));
+    pango_layout_set_text(layout_obj, user_input.c_str(), -1);
+    
+    int text_width, text_height;
+    pango_layout_get_pixel_size(layout_obj, &text_width, &text_height);
+    g_object_unref(layout_obj);
+    
+    // Position the suggestion label after the user text
+    // Search entry is at x=65 with 20px left padding, so text starts at 85
+    int suggestion_x = 85 + text_width;
+    gtk_fixed_move(GTK_FIXED(this->layout), suggestion_label, suggestion_x, 20);
+    
+    // Just show the suggestion part in gray
+    std::string markup = "<span color=\"#FD84CB\">" + suggestion_part + "</span>";
+    gtk_label_set_markup(GTK_LABEL(suggestion_label), markup.c_str());
+    
+    // Show the overlay
+    gtk_widget_set_visible(suggestion_label, TRUE);
+}
+
+void EnhancedEdgeLauncher::apply_suggestion() {
+    if (has_suggestion && !current_suggestion.empty()) {
+        // Block the signal to prevent triggering search_changed
+        g_signal_handlers_block_by_func(search_entry, (gpointer)on_search_changed, this);
+        
+        // Set the full suggestion in the entry
+        gtk_entry_set_text(GTK_ENTRY(search_entry), current_suggestion.c_str());
+        gtk_editable_set_position(GTK_EDITABLE(search_entry), current_suggestion.length());
+        
+        // Unblock the signal
+        g_signal_handlers_unblock_by_func(search_entry, (gpointer)on_search_changed, this);
+        
+        // Update user input and clear suggestion state
+        user_input = current_suggestion;
+        clear_suggestion();
+        
+        // Manually trigger search with the new input
+        on_search_changed(GTK_EDITABLE(search_entry), this);
+    }
+}
+
+void EnhancedEdgeLauncher::clear_suggestion() {
+    current_suggestion = "";
+    has_suggestion = false;
+    
+    // Hide the suggestion overlay
+    if (suggestion_label) {
+        gtk_widget_set_visible(suggestion_label, FALSE);
+    }
+}
+
 void EnhancedEdgeLauncher::create_placeholder_background() {
     if (placeholder_pixbuf) return;
     placeholder_pixbuf = gdk_pixbuf_new(GDK_COLORSPACE_RGB, TRUE, 8, png_width, 600);
@@ -773,6 +918,7 @@ void EnhancedEdgeLauncher::apply_css() {
     css += "#search-entry:focus { border-color: " + accent_hex + "; outline: none; }\n";
     css += "#glitter-area { background-color: transparent; }\n";
     css += "#app-name-label { color: #333; font-size: 16px; font-family: ElysiaOSNew12; background: rgba(255,255,255,0.65); border-radius: 12px; padding: 6px 10px; }\n";
+    css += "#suggestion-label { font-size: 14px; background: transparent; pointer-events: none; padding: 8px 0px; }\n";
 
     gtk_css_provider_load_from_data(css_provider, css.c_str(), -1, NULL);
     gtk_style_context_add_provider_for_screen(
@@ -940,10 +1086,85 @@ gboolean EnhancedEdgeLauncher::on_key_press(GtkWidget* /*widget*/, GdkEventKey* 
     return FALSE;
 }
 
+gboolean EnhancedEdgeLauncher::on_search_key_press(GtkWidget* /*widget*/, GdkEventKey* event, gpointer data) {
+    EnhancedEdgeLauncher* launcher = static_cast<EnhancedEdgeLauncher*>(data);
+    
+    // Right arrow key for auto-completion
+    if (event->keyval == GDK_KEY_Right) {
+        if (launcher->has_suggestion && gtk_widget_get_visible(launcher->suggestion_label)) {
+            // Check if cursor is at the end of the input
+            gint cursor_pos = gtk_editable_get_position(GTK_EDITABLE(launcher->search_entry));
+            const gchar* entry_text = gtk_entry_get_text(GTK_ENTRY(launcher->search_entry));
+            gint text_length = entry_text ? strlen(entry_text) : 0;
+            
+            // Only apply suggestion if cursor is at the end of the current text
+            if (cursor_pos == text_length) {
+                launcher->apply_suggestion();
+                return TRUE;
+            }
+        }
+        return FALSE; // Let normal cursor movement happen if no suggestion or cursor not at end
+    }
+    
+    // Navigation keys override entry movement
+    if (event->keyval == GDK_KEY_Up) {
+        if (launcher->get_current_mode() == ViewMode::Apps) {
+            launcher->get_apps_manager()->select_prev();
+        } else if (launcher->get_current_mode() == ViewMode::Emojis && launcher->get_config().emoji_enabled) {
+            launcher->get_emoji_manager()->select_prev();
+        } else if (launcher->get_current_mode() == ViewMode::Gifs && launcher->get_config().gifs_enabled) {
+            launcher->get_gif_manager()->select_prev();
+        } else if (launcher->get_current_mode() == ViewMode::Files) {
+            launcher->get_files_manager()->select_prev();
+        } else if (launcher->get_current_mode() == ViewMode::Wallpapers) {
+            launcher->get_wallpaper_manager()->select_prev();
+        }
+        return TRUE;
+    }
+    if (event->keyval == GDK_KEY_Down) {
+        if (launcher->get_current_mode() == ViewMode::Apps) {
+            launcher->get_apps_manager()->select_next();
+        } else if (launcher->get_current_mode() == ViewMode::Emojis && launcher->get_config().emoji_enabled) {
+            launcher->get_emoji_manager()->select_next();
+        } else if (launcher->get_current_mode() == ViewMode::Gifs && launcher->get_config().gifs_enabled) {
+            launcher->get_gif_manager()->select_next();
+        } else if (launcher->get_current_mode() == ViewMode::Files) {
+            launcher->get_files_manager()->select_next();
+        } else if (launcher->get_current_mode() == ViewMode::Wallpapers) {
+            launcher->get_wallpaper_manager()->select_next();
+        }
+        return TRUE;
+    }
+    if (event->keyval == GDK_KEY_Return || event->keyval == GDK_KEY_KP_Enter) {
+        if (launcher->get_current_mode() == ViewMode::Apps) {
+            launcher->get_apps_manager()->activate_selected();
+        } else if (launcher->get_current_mode() == ViewMode::Emojis && launcher->get_config().emoji_enabled) {
+            launcher->get_emoji_manager()->activate_selected();
+        } else if (launcher->get_current_mode() == ViewMode::Gifs && launcher->get_config().gifs_enabled) {
+            launcher->get_gif_manager()->activate_selected();
+        } else if (launcher->get_current_mode() == ViewMode::Files) {
+            launcher->get_files_manager()->activate_selected();
+        } else if (launcher->get_current_mode() == ViewMode::Wallpapers) {
+            launcher->get_wallpaper_manager()->activate_selected();
+        }
+        return TRUE;
+    }
+    
+    launcher->spawn_glitter_burst(6);
+    return FALSE;
+}
+
 void EnhancedEdgeLauncher::on_search_changed(GtkEditable* /*editable*/, gpointer data) {
     EnhancedEdgeLauncher* launcher = static_cast<EnhancedEdgeLauncher*>(data);
     const gchar* search_text = gtk_entry_get_text(GTK_ENTRY(launcher->search_entry));
     std::string query = search_text ? search_text : "";
+    
+    // Skip auto-completion if we're in the middle of applying a suggestion
+    bool skip_autocomplete = false;
+    if (launcher->has_suggestion && query == launcher->current_suggestion) {
+        launcher->clear_suggestion();
+        skip_autocomplete = true;
+    }
     
     // Check for wallpaper search - only works in apps mode
     if (launcher->get_current_mode() == ViewMode::Apps && query.length() >= 5 && query.substr(0, 5) == "wall:") {
@@ -963,10 +1184,11 @@ void EnhancedEdgeLauncher::on_search_changed(GtkEditable* /*editable*/, gpointer
         launcher->refresh_current_view();
     }
     
-    // Normalize query lowercase
+    // Normalize query lowercase for filtering (but keep original for suggestions)
     std::string ql = query;
     std::transform(ql.begin(), ql.end(), ql.begin(), ::tolower);
     
+    // Apply filtering to current mode
     if (launcher->get_current_mode() == ViewMode::Apps) {
         launcher->get_apps_manager()->filter_apps(ql);
     } else if (launcher->get_current_mode() == ViewMode::Emojis && launcher->get_config().emoji_enabled) {
@@ -975,6 +1197,11 @@ void EnhancedEdgeLauncher::on_search_changed(GtkEditable* /*editable*/, gpointer
         launcher->get_gif_manager()->filter_gifs(ql);
     } else if (launcher->get_current_mode() == ViewMode::Files && launcher->get_config().files_enabled && launcher->get_files_manager()) {
         launcher->get_files_manager()->filter_files(query);
+    }
+    
+    // Update auto-completion for non-files modes (excluding files as requested)
+    if (!skip_autocomplete && launcher->get_current_mode() != ViewMode::Files) {
+        launcher->update_auto_completion(query);
     }
     
     launcher->spawn_glitter_burst(10);

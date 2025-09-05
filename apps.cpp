@@ -103,7 +103,15 @@ public:
         if (manager && manager->launcher && manager->launcher->get_window() && GTK_IS_WIDGET(manager->launcher->get_window())) {
             manager->all_apps = std::move(*payload->apps);
             manager->filtered_apps = manager->all_apps;
-            manager->filter_apps("");
+            
+            // Only call filter_apps if user is currently in Apps mode (to avoid refreshing wrong view)
+            if (manager->launcher->get_current_mode() == ViewMode::Apps) {
+                manager->filter_apps("");
+            } else {
+                // Still update the filtered list, just don't refresh the view
+                manager->current_page = 0;
+                manager->selected_index = manager->filtered_apps.empty() ? -1 : 0;
+            }
         }
         delete payload->apps;
         delete payload;

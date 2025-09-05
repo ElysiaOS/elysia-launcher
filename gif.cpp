@@ -25,7 +25,7 @@ private:
     static constexpr int MAX_CONCURRENT_DOWNLOADS = 5;
     
     // Tenor API configuration
-    static constexpr const char* TENOR_API_KEY = "";
+    static constexpr const char* TENOR_API_KEY = "AIzaSyAzCJCr7yxOxQwKuzUMH7SNBiXOeOg3E2s";
     static constexpr const char* TENOR_BASE_URL = "https://tenor.googleapis.com/v2/search";
 
 public:
@@ -189,8 +189,12 @@ public:
         gifs_loaded = true;
         current_page = 0;
         selected_index = filtered_gifs.empty() ? -1 : 0;
-        refresh_current_view();
-        update_app_name_label();
+        
+        // Only refresh view if user is currently in GIF mode
+        if (launcher->get_current_mode() == ViewMode::Gifs) {
+            refresh_current_view();
+            update_app_name_label();
+        }
     }
 
     void ensure_gifs_loaded() {
@@ -274,10 +278,13 @@ public:
                                         self->loaded_thumbnails[index] = pix;
                                         self->loading_indices.erase(index);
                                         
-                                        size_t page_start = self->current_page * self->GIFS_PER_PAGE;
-                                        size_t page_end = page_start + self->GIFS_PER_PAGE;
-                                        if (index >= page_start && index < page_end) {
-                                            self->refresh_current_view();
+                                        // Only refresh view if user is currently in GIF mode
+                                        if (self->launcher->get_current_mode() == ViewMode::Gifs) {
+                                            size_t page_start = self->current_page * self->GIFS_PER_PAGE;
+                                            size_t page_end = page_start + self->GIFS_PER_PAGE;
+                                            if (index >= page_start && index < page_end) {
+                                                self->refresh_current_view();
+                                            }
                                         }
                                         
                                         self->active_downloads--;

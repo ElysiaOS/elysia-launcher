@@ -87,6 +87,7 @@ private:
     GtkWidget* layout;
     GtkWidget* bg_image;
     GtkWidget* search_entry;
+    GtkWidget* suggestion_label;  // Gray text overlay for auto-completion
     GtkWidget* glitter_area;
     GtkWidget* app_name_label;
     GtkWidget* mode_apps_button;
@@ -126,6 +127,11 @@ private:
     gboolean buttons_visible = TRUE;
     ViewMode current_mode = ViewMode::Apps;
     int selected_index = -1; // index into current mode's filtered items
+    
+    // Auto-completion state
+    std::string current_suggestion;
+    std::string user_input;
+    bool has_suggestion = false;
     
     // Background
     GdkPixbuf* bg_pixbuf = nullptr;
@@ -213,6 +219,7 @@ public:
     static gboolean on_scroll_event(GtkWidget* widget, GdkEventScroll* event, gpointer data);
     static gboolean on_click_event(GtkWidget* widget, GdkEventButton* event, gpointer data);
     static gboolean on_key_press(GtkWidget* widget, GdkEventKey* event, gpointer data);
+    static gboolean on_search_key_press(GtkWidget* widget, GdkEventKey* event, gpointer data);
     static void on_search_changed(GtkEditable* editable, gpointer data);
     
     // Clipboard and quit
@@ -229,6 +236,13 @@ public:
     
     // UI helpers
     void update_app_name_label();
+    
+    // Auto-completion helpers
+    void update_auto_completion(const std::string& query);
+    std::string find_best_suggestion(const std::string& query);
+    void show_suggestion_overlay(const std::string& user_input, const std::string& suggestion);
+    void apply_suggestion();
+    void clear_suggestion();
 };
 
 #endif // ELY_LAUNCHER_H 
